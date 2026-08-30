@@ -808,6 +808,7 @@ def multilabelmarginloss_0d_no_reduce_test():
             loss_reference_fns['MultiLabelMarginLoss'](i, t.data.type_as(i).long(), reduction='none'),
         check_sum_reduction=True,
         check_gradgrad=False,
+        test_device=not TEST_MPS,
         pickle=False)
 
 
@@ -825,6 +826,7 @@ def multilabelmarginloss_1d_no_reduce_test():
             loss_reference_fns['MultiLabelMarginLoss'](i, t.data.type_as(i).long(), reduction='none'),
         check_sum_reduction=True,
         check_gradgrad=False,
+        test_device=not TEST_MPS,
         pickle=False,
         default_dtype=torch.double)
 
@@ -843,6 +845,7 @@ def multilabelmarginloss_index_neg_test():
             loss_reference_fns['MultiLabelMarginLoss'](i, t.data.type_as(i).long(), reduction='none'),
         check_sum_reduction=True,
         check_gradgrad=False,
+        test_device=not TEST_MPS,
         pickle=False,
         default_dtype=torch.double)
 
@@ -861,6 +864,7 @@ def multilabelmarginloss_no_reduce_test():
             loss_reference_fns['MultiLabelMarginLoss'](i, t.data.type_as(i).long(), reduction='none'),
         check_sum_reduction=True,
         check_gradgrad=False,
+        test_device=not TEST_MPS,
         pickle=False,
         default_dtype=torch.double)
 
@@ -930,6 +934,7 @@ def multilabelsoftmarginloss_no_reduce_test():
             (-(t * i.sigmoid().log() + (1 - t) * (-i).sigmoid().log())).sum(dim=1) / i.size(1),
         check_gradgrad=False,
         pickle=False,
+        test_device=not TEST_MPS,
         default_dtype=torch.double)
 
 
@@ -969,6 +974,7 @@ def multimarginloss_no_reduce_test():
         check_sum_reduction=True,
         check_gradgrad=False,
         pickle=False,
+        test_device=not TEST_MPS,
         default_dtype=torch.double)
 
 
@@ -987,6 +993,7 @@ def multimarginloss_1d_no_reduce_test():
         check_sum_reduction=True,
         check_gradgrad=False,
         pickle=False,
+        test_device=not TEST_MPS,
         default_dtype=torch.double)
 
 
@@ -1005,6 +1012,7 @@ def multimarginloss_1d_input_0d_target_no_reduce_test():
         check_sum_reduction=True,
         check_gradgrad=False,
         pickle=False,
+        test_device=not TEST_MPS,
         default_dtype=torch.double)
 
 
@@ -1022,6 +1030,7 @@ def multimarginloss_p_no_reduce_test():
             loss_reference_fns['MultiMarginLoss'](i, t.data.type_as(i).long(), p=2, reduction='none'),
         check_sum_reduction=True,
         check_gradgrad=False,
+        test_device=not TEST_MPS,
         pickle=False,
         default_dtype=torch.double)
 
@@ -1042,6 +1051,7 @@ def multimarginloss_margin_no_reduce_test():
                                                   margin=0.5, reduction='none'),
         check_sum_reduction=True,
         check_gradgrad=False,
+        test_device=not TEST_MPS,
         pickle=False,
         default_dtype=torch.double)
 
@@ -1064,6 +1074,7 @@ def multimarginloss_weights_no_reduce_test():
                                                   weight=weights, reduction='none'),
         check_sum_reduction=True,
         check_gradgrad=False,
+        test_device=not TEST_MPS,
         pickle=False,
         default_dtype=torch.double)
 
