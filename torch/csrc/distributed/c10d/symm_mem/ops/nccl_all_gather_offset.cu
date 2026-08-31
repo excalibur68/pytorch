@@ -114,7 +114,8 @@ __global__ void all_gather_offset_push_kernel(
 
 #endif // NCCL_HAS_SYMMEM_DEVICE_SUPPORT
 
-#ifdef NCCL_DEVICE_HAS_REDUCE_COPY
+#if defined(NCCL_HAS_SYMMEM_DEVICE_SUPPORT) && \
+    defined(NCCL_DEVICE_HAS_REDUCE_COPY)
 
 // Multimem broadcast kernel.  Each CTA grid-strides over this rank's parameters
 // and broadcasts the rank's own shard into the output's multicast mapping via
@@ -155,7 +156,7 @@ __global__ void all_gather_offset_mm_kernel(
   bar.sync(coop, cuda::memory_order_acq_rel);
 }
 
-#endif // NCCL_DEVICE_HAS_REDUCE_COPY
+#endif // NCCL_HAS_SYMMEM_DEVICE_SUPPORT && NCCL_DEVICE_HAS_REDUCE_COPY
 
 // Host entry point.  Validates arguments, resolves the default offsets, picks
 // the multimem or LSA-push path, fills the schedule, and launches.
