@@ -459,9 +459,27 @@ struct NCCLAllocation {
   ~NCCLAllocation();
 
 #ifdef USE_ROCM
+  cudaError_t query_signal_pad_zero() const {
+    if (signal_pad_zero_event == nullptr) {
+      return cudaSuccess;
+    }
+    // A query from any thread is prohibited while another thread owns a
+    // global-mode capture. Temporarily relax this thread's interaction mode;
+    // the event was recorded outside capture, so querying it does not inspect
+    // captured work.
+    c10::cuda::CUDAStreamCaptureModeGuard capture_mode_guard(
+        cudaStreamCaptureModeRelaxed);
+    const auto query = cudaEventQuery(signal_pad_zero_event);
+    if (query == cudaErrorNotReady) {
+      // Match the caching allocator's event-query handling: NotReady is an
+      // expected readiness result, not an error to leak into later API calls.
+      (void)cudaGetLastError();
+    }
+    return query;
+  }
+
   bool signal_pad_zero_complete() const {
-    return signal_pad_zero_event == nullptr ||
-        cudaEventQuery(signal_pad_zero_event) == cudaSuccess;
+    return query_signal_pad_zero() == cudaSuccess;
   }
 
   void clear_signal_pad_zero_event() {
@@ -494,7 +512,15 @@ struct NCCLAllocation {
     }
     err = cudaEventRecord(signal_pad_zero_event, stream);
     if (err != cudaSuccess) {
-      const auto sync_err = cudaStreamSynchronize(stream);
+      cudaError_t sync_err;
+      {
+        // A free on this thread may race a global-mode capture owned by
+        // another thread. Keep the relaxed window scoped to the synchronous
+        // fallback; the async memset and event record above remain unguarded.
+        c10::cuda::CUDAStreamCaptureModeGuard capture_mode_guard(
+            cudaStreamCaptureModeRelaxed);
+        sync_err = cudaStreamSynchronize(stream);
+      }
       if (sync_err != cudaSuccess) {
         LOG(WARNING) << "Failed to record NCCL symmetric-memory zero event and "
                         "failed to synchronize the cleanup stream: "
@@ -514,7 +540,9 @@ struct NCCLAllocation {
     if (signal_pad_zero_event == nullptr) {
       return true;
     }
-    const auto query = cudaEventQuery(signal_pad_zero_event);
+    // This path is not used by a capturing stream, but it may run on a
+    // different thread while a global-mode capture is active.
+    const auto query = query_signal_pad_zero();
     if (query == cudaSuccess) {
       return true;
     }
@@ -1245,10 +1273,14 @@ class NCCLSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
         // here would let free -> same-address alloc form an ABA cycle and pass
         // rendezvous's final identity check for a different tensor.
         for (auto it = blocks.begin(); it != blocks.end(); ++it) {
-          const bool ready_for_capture =
-              (*it)->signal_pad_clean && (*it)->signal_pad_zero_complete();
+          // signal_pad_clean means a zero and its event were enqueued outside
+          // capture. The guarded query is both capture-conformant and needed:
+          // frees on other threads can enqueue a same-size block after
+          // torch.cuda.graph's pre-capture synchronize.
           if (it->use_count() == 1 &&
-              (!in_capture || ready_for_capture)) {
+              (!in_capture ||
+               ((*it)->signal_pad_clean &&
+                (*it)->signal_pad_zero_complete()))) {
             // Preserve the normal LIFO reuse policy among eligible blocks.
             block_it = it;
           }
@@ -1267,12 +1299,17 @@ class NCCLSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
     if (cached_alloc) {
       c10::cuda::CUDAGuard guard(device_idx);
       auto stream = at::cuda::getCurrentCUDAStream().stream();
-      if (cached_alloc->signal_pad_clean) {
+      if (in_capture) {
+        // The guarded eligibility query above proved the pre-capture zero
+        // complete. Do not query again or wait on its event here: a wait on an
+        // event recorded outside capture would add an external dependency to
+        // the graph.
+        TORCH_INTERNAL_ASSERT(cached_alloc->signal_pad_clean);
+      } else if (cached_alloc->signal_pad_clean) {
         TORCH_CHECK(
             cached_alloc->wait_signal_pad_zero(stream),
             "Failed to order NCCL symmetric-memory signal pad cleanup before reuse.");
       } else {
-        TORCH_INTERNAL_ASSERT(!in_capture);
         TORCH_CHECK(
             cached_alloc->record_signal_pad_zero(stream),
             "Failed to zero NCCL symmetric-memory signal pad before reuse.");
@@ -1294,7 +1331,7 @@ class NCCLSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
         "without a clean cached block for size=",
         size,
         ". Call symm_mem.empty() and rendezvous() with this exact size "
-        "outside capture before capturing the graph.");
+        "outside capture, then synchronize before capturing the graph.");
 #endif // USE_ROCM
 
     void* alloc_base;

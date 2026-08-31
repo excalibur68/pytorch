@@ -3,6 +3,7 @@
 import gc
 import os
 import sys
+import threading
 from collections.abc import Callable
 from functools import wraps
 from typing import ParamSpec, TypeVar
@@ -628,6 +629,80 @@ class NCCLSymmetricMemoryTest(MultiProcContinuousTest):
             with torch.cuda.graph(graph):
                 # This exact byte size is intentionally not warmed up.
                 symm_mem.empty(123457, dtype=torch.float32, device=self.device)
+
+    @skip_but_pass_in_sandcastle_if(
+        not TEST_WITH_ROCM, "ROCm-specific HIP graph allocation behavior"
+    )
+    @skip_but_pass_in_sandcastle_if(IS_WINDOWS, "NCCL doesn't support Windows")
+    @requires_nccl_version(
+        (2, 29, 7), "ROCm LSA symmetric-memory support from RCCL 2.29.7"
+    )
+    @skip_if_lt_x_gpu(2)
+    def test_nccl_symmem_cached_alloc_on_other_thread_during_capture(self):
+        symm_mem.set_backend("NCCL")
+        torch.cuda.set_device(self.rank)
+        c10d.all_reduce(torch.ones(1, device=self.device))
+        group_name = c10d.group.WORLD.group_name
+        numel, dtype = 1024, torch.float
+
+        # Seed an exact-size cached block whose zero-completion event can be
+        # queried by an allocation on another thread.
+        warm = symm_mem.empty(numel, dtype=dtype, device=self.device)
+        warm_handle = symm_mem.rendezvous(warm, group=group_name)
+        warm_ptr = warm.data_ptr()
+        del warm_handle, warm
+        gc.collect()
+        torch.cuda.synchronize(self.device)
+
+        release = threading.Event()
+        done = threading.Event()
+        reused_tensors = []
+        reused_ptrs = []
+        errors = []
+
+        def worker():
+            torch.cuda.set_device(self.rank)
+            release.wait()
+            try:
+                reused = symm_mem.empty(numel, dtype=dtype, device=self.device)
+                reused_ptrs.append(reused.data_ptr())
+                # Keep the allocation alive until the main-thread capture ends;
+                # freeing it here would test a different event-record path.
+                reused_tensors.append(reused)
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                done.set()
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+
+        graph = torch.cuda.CUDAGraph()
+        capture_stream = torch.cuda.Stream(device=self.device)
+        worker_completed_during_capture = False
+        try:
+            with torch.cuda.graph(graph, stream=capture_stream):
+                # Keep a real node in the graph while the worker reuses the
+                # cached block and queries its pre-capture completion event.
+                torch.cuda._sleep(1)
+                release.set()
+                worker_completed_during_capture = done.wait(timeout=30)
+        finally:
+            release.set()
+            thread.join(timeout=30)
+
+        self.assertTrue(
+            worker_completed_during_capture,
+            "worker allocation did not complete during graph capture",
+        )
+        self.assertFalse(thread.is_alive(), "worker allocation thread did not exit")
+        if errors:
+            raise errors[0]
+        self.assertEqual(reused_ptrs, [warm_ptr])
+
+        graph.replay()
+        capture_stream.synchronize()
+        reused_tensors.clear()
 
     @skip_but_pass_in_sandcastle_if(
         not TEST_WITH_ROCM, "ROCm-specific HIP graph allocation behavior"
